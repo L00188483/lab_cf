@@ -1,0 +1,168 @@
+Parameters:
+  VpcCIDR:
+    Type: String
+    Default: "10.0.0.0/16"
+    Description: The CIDR block for the VPC
+  PublicSubnetCIDR:
+    Type: String
+    Default: "10.0.1.0/24"
+    Description: CIDR block for the public subnet
+  PrivateSubnetCIDR:
+    Type: String
+    Default: "10.0.2.0/24"
+    Description: CIDR block for the private subnet
+  AvailabilityZone:
+    Type: String
+    Default: "eu-west-1a"
+  ImageId: 
+    Type: String
+    Default: "ami-0ea0f26a6d50850c5"
+  SshKeyPair:
+    Type: String
+    Default: "firstEC2instancekeypair"
+
+Resources:
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # VPC
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+
+  # Public Subnet
+  PublicSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnetCIDR
+      AvailabilityZone: !Ref AvailabilityZone
+      MapPublicIpOnLaunch: 'true'
+
+  # Private Subnet
+  PrivateSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetCIDR
+      AvailabilityZone: !Ref AvailabilityZone
+      MapPublicIpOnLaunch: 'false'
+
+  # Internet Gateway for Public Subnet
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties: {}
+
+  # Attach the Internet Gateway to the VPC
+  AttachIGW:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # EC2 Instance in Public Subnet (Jump Box)
+  PublicEC2Instance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: 't2.micro'
+      ImageId: !Ref ImageId
+      SubnetId: !Ref PublicSubnet
+      KeyName: !Ref SshKeyPair
+      SecurityGroupIds:
+        - !Ref PublicSecurityGroup
+
+  # EC2 Instance in Private Subnet
+  PrivateEC2Instance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: 't2.micro'
+      ImageId: !Ref ImageId
+      SubnetId: !Ref PrivateSubnet
+      KeyName: !Ref SshKeyPair
+      SecurityGroupIds:
+        - !Ref PrivateSecurityGroup
+
+  # Security Group for Public EC2
+  PublicSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: 'Allow HTTP and SSH access to Public EC2'
+      SecurityGroupIngress:
+        - IpProtocol: 'tcp'
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: '0.0.0.0/0'  # SSH from anywhere (limited by security policies)
+        - IpProtocol: 'tcp'
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: '0.0.0.0/0'  # HTTP from anywhere
+      VpcId: !Ref VPC
+
+  # Security Group for Private EC2
+  PrivateSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: 'Allow SSH from Public EC2'
+      SecurityGroupIngress:
+        - IpProtocol: 'tcp'
+          FromPort: '22'
+          ToPort: '22'
+          SourceSecurityGroupId: !Ref PublicSecurityGroup
+      VpcId: !Ref VPC
+
+  # NAT Gateway (for Private Subnet)
+  NatGateway:
+    Type: 'AWS::EC2::NatGateway'
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      AllocationId: !GetAtt ElasticIP.AllocationId
+
+  # Elastic IP for NAT Gateway
+  ElasticIP:
+    Type: 'AWS::EC2::EIP'
+
+Outputs:
+  PublicInstanceIP:
+    Value: !GetAtt PublicEC2Instance.PublicIp
+    Description: 'Public IP of the EC2 instance in the public subnet'
+
+
+
+# If the private subnet is to have internet access via the NAT Gateway, you need a separate private route table:
+
+#PrivateRouteTable:
+#  Type: AWS::EC2::RouteTable
+#  Properties:
+#    VpcId: !Ref VPC
+#
+#PrivateRoute:
+#  Type: AWS::EC2::Route
+#  Properties:
+#    RouteTableId: !Ref PrivateRouteTable
+#    DestinationCidrBlock: 0.0.0.0/0
+#    NatGatewayId: !Ref NatGateway
+#
+#PrivateSubnetRouteTableAssociation:
+#  Type: AWS::EC2::SubnetRouteTableAssociation
+#  Properties:
+#    SubnetId: !Ref PrivateSubnet
+#    RouteTableId: !Ref PrivateRouteTable
