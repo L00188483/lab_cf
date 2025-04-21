@@ -3,17 +3,21 @@ Parameters:
     Type: String
     Default: "10.0.0.0/16"
     Description: The CIDR block for the VPC
-  PublicSubnetCIDR:
+  PublicSubnetCIDR1:
     Type: String
     Default: "10.0.1.0/24"
-    Description: CIDR block for the public subnet
-  PrivateSubnetCIDR1:
+    Description: CIDR block for public subnet1
+  PublicSubnetCIDR2:
     Type: String
     Default: "10.0.2.0/24"
+    Description: CIDR block for public subnet2
+  PrivateSubnetCIDR1:
+    Type: String
+    Default: "10.0.3.0/24"
     Description: CIDR block for the private subnet
   PrivateSubnetCIDR2:
     Type: String
-    Default: "10.0.3.0/24"
+    Default: "10.0.4.0/24"
     Description: CIDR block for the private subnet
   Region:
     Type: String
@@ -33,11 +37,19 @@ Parameters:
 
 Resources:
 
-  PublicSubnetRouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
+  ######################################################
+  # VPC
+  ######################################################
+  VPC:
+    Type: 'AWS::EC2::VPC'
     Properties:
-      SubnetId: !Ref PublicSubnet
-      RouteTableId: !Ref PublicRouteTable
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  ######################################################
+  # PublicRoute, PublicRouteTable, PublicSubnetRouteTableAssociation
+  ######################################################
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -51,21 +63,101 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
 
-  # VPC
-  VPC:
-    Type: 'AWS::EC2::VPC'
-    Properties:
-      CidrBlock: !Ref VpcCIDR
-      EnableDnsSupport: true
-      EnableDnsHostnames: true
 
-  # Public Subnet
-  PublicSubnet:
+  PublicSubnetRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+
+  PublicSubnetRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # If the private subnet is to have internet access via the NAT Gateway, you need a separate private route table:
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+
+  PrivateSubnetRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  ######################################################
+  # InternetGateway, VPCGatewayAttachment, NatGateway, EIP
+  ######################################################
+
+  # Internet Gateway for Public Subnet
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties: {}
+
+  # Attach the Internet Gateway to the VPC
+  AttachIGW:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # NAT Gateway (for Private Subnet).
+  # Future work: add a 2nd NAT in the other AZ for high availability
+  NatGateway:
+    Type: 'AWS::EC2::NatGateway'
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      AllocationId: !GetAtt ElasticIP.AllocationId
+
+  # Elastic IP for NAT Gateway
+  ElasticIP:
+    Type: 'AWS::EC2::EIP'
+
+
+  ######################################################
+  # Subnets
+  ######################################################
+
+  PublicSubnet1:
     Type: 'AWS::EC2::Subnet'
     Properties:
       VpcId: !Ref VPC
-      CidrBlock: !Ref PublicSubnetCIDR
-      AvailabilityZone: !Ref AvailabilityZone
+      CidrBlock: !Ref PublicSubnetCIDR1
+      AvailabilityZone:
+        !Select
+          - 0
+          - Fn::GetAZs:
+              Ref: Region
+      MapPublicIpOnLaunch: true
+
+  PublicSubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnetCIDR2
+      AvailabilityZone:
+        !Select
+          - 1
+          - Fn::GetAZs:
+              Ref: Region
       MapPublicIpOnLaunch: true
 
   PrivateSubnet1:
@@ -92,52 +184,20 @@ Resources:
       CidrBlock: !Ref PrivateSubnetCIDR2
       MapPublicIpOnLaunch: false
 
-  # Internet Gateway for Public Subnet
-  InternetGateway:
-    Type: 'AWS::EC2::InternetGateway'
-    Properties: {}
+  ######################################################
+  # SecurityGroups
+  ######################################################
 
-  # Attach the Internet Gateway to the VPC
-  AttachIGW:
-    Type: 'AWS::EC2::VPCGatewayAttachment'
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
     Properties:
+      GroupDescription: Allow HTTP
       VpcId: !Ref VPC
-      InternetGatewayId: !Ref InternetGateway
-
-  # EC2 Instance in Public Subnet (Jump Box)
-  PublicEC2Instance:
-    Type: 'AWS::EC2::Instance'
-    Properties:
-      InstanceType: t2.micro
-      ImageId: !Ref ImageId
-      SubnetId: !Ref PublicSubnet
-      KeyName: !Ref SshKeyPair
-      SecurityGroupIds:
-        - !Ref PublicSecurityGroup
-
-  PrivateEC2LaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate
-    Properties:
-      LaunchTemplateData:
-        InstanceType: t2.micro
-        ImageId: !Ref ImageId
-        KeyName: !Ref SshKeyPair
-        SecurityGroupIds:
-          - !Ref PrivateSecurityGroup
-
-  PrivateEC2AutoScalingGroup:
-    Type: AWS::AutoScaling::AutoScalingGroup
-    Properties:
-      LaunchTemplate:
-        LaunchTemplateId: !Ref PrivateEC2LaunchTemplate
-        Version: !GetAtt PrivateEC2LaunchTemplate.LatestVersionNumber
-      MinSize: !Ref InstanceCount
-      MaxSize: !Ref InstanceCount
-      DesiredCapacity: !Ref InstanceCount
-      VPCZoneIdentifier:
-        - !Ref PrivateSubnet1
-        - !Ref PrivateSubnet2
-
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
 
   # Security Group for Public EC2
   PublicSecurityGroup:
@@ -155,8 +215,23 @@ Resources:
           CidrIp: '0.0.0.0/0'  # HTTP from anywhere
       VpcId: !Ref VPC
 
+  PrivateSecurityGroupHTTP:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow traffic from ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup  # <-- ensures http (80) connections can only come from the ALB
+        - IpProtocol: tcp  # temporarily allowing port 80 from the jumpbox
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref PublicSecurityGroup
+
   # Security Group for Private EC2
-  PrivateSecurityGroup:
+  PrivateSecurityGroupSSH:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
       GroupDescription: 'Allow SSH from Public EC2'
@@ -164,43 +239,117 @@ Resources:
         - IpProtocol: 'tcp'
           FromPort: 22
           ToPort: 22
-          SourceSecurityGroupId: !Ref PublicSecurityGroup
+          SourceSecurityGroupId: !Ref PublicSecurityGroup  # <-- Important, ensures only the jumpbox can make ssh connections
       VpcId: !Ref VPC
 
-  # NAT Gateway (for Private Subnet)
-  NatGateway:
-    Type: 'AWS::EC2::NatGateway'
-    Properties:
-      SubnetId: !Ref PublicSubnet
-      AllocationId: !GetAtt ElasticIP.AllocationId
 
-  # Elastic IP for NAT Gateway
-  ElasticIP:
-    Type: 'AWS::EC2::EIP'
+  ######################################################
+  # LoadBalancer, TargetGroup, Listener
+  ######################################################
+
+  MyLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: MyAppALB
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Type: application
+
+  MyTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VPC
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      HealthCheckPath: /
+
+  MyALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref MyLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref MyTargetGroup
+
+  ######################################################
+  # Public EC2 Instance (jumpbox)
+  ######################################################
+
+  PublicEC2Instance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: t2.micro
+      ImageId: !Ref ImageId
+      SubnetId: !Ref PublicSubnet1
+      KeyName: !Ref SshKeyPair
+      SecurityGroupIds:
+        - !Ref PublicSecurityGroup
+      UserData: !Base64 |
+        #!/bin/bash
+        mkdir -p /var/www/html
+        chmod -R 755 /var/www/html
+        echo "Hello from EC2" > /var/www/html/index.html
+        yum install -y httpd
+        systemctl start httpd
+        systemctl enable httpd
+
+  ######################################################
+  # AutoScalingGroup, LaunchTemplate  (i.e. private ec2 instances)
+  ######################################################
+
+  PrivateEC2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        InstanceType: t2.micro
+        ImageId: !Ref ImageId
+        KeyName: !Ref SshKeyPair
+        SecurityGroupIds:
+          - !Ref PrivateSecurityGroupSSH
+          - !Ref PrivateSecurityGroupHTTP
+        UserData: !Base64 |
+          #!/bin/bash
+          mkdir -p /var/www/html
+          chmod -R 755 /var/www/html
+          echo "Hello from EC2" > /var/www/html/index.html
+          yum install -y httpd
+          systemctl start httpd
+          systemctl enable httpd
+
+  PrivateEC2AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref PrivateEC2LaunchTemplate
+        Version: !GetAtt PrivateEC2LaunchTemplate.LatestVersionNumber
+      MinSize: !Ref InstanceCount
+      MaxSize: !Ref InstanceCount
+      DesiredCapacity: !Ref InstanceCount
+      TargetGroupARNs:
+        - !Ref MyTargetGroup
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+
+
+
+  ######################################################
+  # Outputs
+  ######################################################
 
 Outputs:
   PublicInstanceIP:
     Value: !GetAtt PublicEC2Instance.PublicIp
     Description: 'Public IP of the EC2 instance in the public subnet'
 
+  LoadBalancerDNS:
+    Description: "Public DNS of the Load Balancer"
+    Value: !GetAtt MyLoadBalancer.DNSName
 
-
-# If the private subnet is to have internet access via the NAT Gateway, you need a separate private route table:
-
-#PrivateRouteTable:
-#  Type: AWS::EC2::RouteTable
-#  Properties:
-#    VpcId: !Ref VPC
-#
-#PrivateRoute:
-#  Type: AWS::EC2::Route
-#  Properties:
-#    RouteTableId: !Ref PrivateRouteTable
-#    DestinationCidrBlock: 0.0.0.0/0
-#    NatGatewayId: !Ref NatGateway
-#
-#PrivateSubnetRouteTableAssociation:
-#  Type: AWS::EC2::SubnetRouteTableAssociation
-#  Properties:
-#    SubnetId: !Ref PrivateSubnet
-#    RouteTableId: !Ref PrivateRouteTable
